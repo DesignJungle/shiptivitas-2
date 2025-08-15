@@ -126,9 +126,54 @@ app.put('/api/v1/clients/:id', (req, res) => {
   const client = clients.find(client => client.id === id);
 
   /* ---------- Update code below ----------*/
+  // If neither status nor priority is provided, do nothing
+  if (typeof status === 'undefined' && typeof priority === 'undefined') {
+    return res.status(200).send(clients);
+  }
 
+  // If status is provided and is valid, update status
+  let newStatus = typeof status !== 'undefined' ? status : client.status;
+  let newPriority;
+  let statusChanged = newStatus !== client.status;
 
+  // Get all clients in the target swimlane
+  let targetClients = clients.filter(c => c.status === newStatus && c.id !== id);
 
+  // If priority is provided, validate and use it, else set to end
+  if (typeof priority !== 'undefined') {
+    const { valid, messageObj } = validatePriority(priority);
+    if (!valid) {
+      return res.status(400).send(messageObj);
+    }
+    // Clamp priority to valid range
+    newPriority = Math.max(1, Math.min(priority, targetClients.length + 1));
+  } else {
+    // If moving swimlane, put at end; if rearranging, keep current
+    newPriority = statusChanged ? targetClients.length + 1 : client.priority;
+  }
+
+  // Remove client from old swimlane and reorder priorities
+  if (statusChanged) {
+    let oldClients = clients.filter(c => c.status === client.status && c.id !== id);
+    oldClients.sort((a, b) => a.priority - b.priority);
+    oldClients.forEach((c, idx) => {
+      db.prepare('update clients set priority = ? where id = ?').run(idx + 1, c.id);
+    });
+  }
+
+  // Insert client into new swimlane at newPriority, shift others
+  targetClients.sort((a, b) => a.priority - b.priority);
+  targetClients.forEach((c, idx) => {
+    let p = idx + 1;
+    if (p >= newPriority) p++;
+    db.prepare('update clients set priority = ? where id = ?').run(p, c.id);
+  });
+
+  // Update the client itself
+  db.prepare('update clients set status = ?, priority = ? where id = ?').run(newStatus, newPriority, id);
+
+  // Return updated list
+  clients = db.prepare('select * from clients').all();
   return res.status(200).send(clients);
 });
 
